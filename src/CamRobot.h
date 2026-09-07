@@ -112,7 +112,13 @@ private:
     // (btp::NodeConfig is abstract, held by reference -- see btp/node.hpp),
     // so it must already be constructed.
     CamLink protocol_link_{*this};
-    std::optional<btp::SizedNode<btp::NodeSize::Low>> node_;
+    // NodeSize::Low's 256-byte manifest scratch fit camera.status alone, but
+    // the two-topic catalog (camera.status + camera.matrix) serialises to 262
+    // bytes -- write_topics() fails BufferTooSmall and emit_manifest() drops
+    // the whole MANIFEST_DATA reply silently (confirmed against the real
+    // btp::Catalog/ManifestWriter). Medium's 512-byte scratch covers it with
+    // room to spare; RAM headroom is not remotely tight on this board.
+    std::optional<btp::SizedNode<btp::NodeSize::Medium>> node_;
 };
 
 #endif  // CAM_ROBOT_H

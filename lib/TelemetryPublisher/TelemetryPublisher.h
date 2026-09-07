@@ -181,11 +181,13 @@ private:
     static constexpr std::size_t kMaxPayloadSize = kCameraStatusPayloadSize;
     static constexpr std::size_t kMaxTopics = 2U;  // matches kSchemas today
 public:
-    // One topic times a handful of concurrent desktop sessions behind the
-    // single ESP-NOW peer -- node_'s own btp::SubscriptionTable is what
-    // actually enforces this (CamRobot's node_ MaxSubscriptions template
-    // argument), sized from this same constant so the two can never drift.
-    static constexpr std::size_t kMaxSubscriptions = 4U;
+    // A couple of topics times a handful of concurrent desktop sessions
+    // behind the single ESP-NOW peer -- node_'s own btp::SubscriptionTable is
+    // what actually enforces this. CamRobot's node_ is btp::SizedNode<
+    // NodeSize::Medium> (MaxSubscriptions = 8), so this constant is
+    // documentation, not a template argument -- keep it in step by hand if
+    // that tier ever changes.
+    static constexpr std::size_t kMaxSubscriptions = 8U;
 
 private:
     struct Sample {
