@@ -24,6 +24,7 @@ class BtpEndpoint;
 class TelemetryPublisher {
 public:
     static constexpr std::uint16_t kCameraStatusTopicId = 0x0201U;
+    static constexpr std::uint16_t kCameraMatrixTopicId = 0x0202U;
 
     // Reserved subscriber identity for a subscription created ON this device
     // (a future "telemetry -sub" shell command) rather than by a SUBSCRIBE
@@ -38,6 +39,16 @@ public:
     // same non-nullable fixed-width layout btp::SampleWriter uses for
     // bally_OS's robot.state/protocol.test (see its TelemetryPublisher.cpp).
     static constexpr std::size_t kCameraStatusPayloadSize = 9U;
+    // The camera.matrix document is Camera.cpp's downsampled black/white
+    // grid (OUTPUT_COLS x OUTPUT_ROWS, header+footer included), same framing
+    // bally_OS's system.monitor uses for its own UTF-8 replace-in-place
+    // topic. TELEMETRY reserves the first two payload octets for
+    // schema_version, leaving this much for the text itself.
+    // BtpTransport.h's kMaxLogicalPayloadSize must stay >= the payload size
+    // below.
+    static constexpr std::size_t kMaxCameraMatrixTextSize = 1900U;
+    static constexpr std::size_t kMaxCameraMatrixPayloadSize =
+        kMaxCameraMatrixTextSize + 2U;
 
     enum class Encoding : std::uint8_t { Utf8 = 0x02U, PackedLe = 0x05U };
 
@@ -135,6 +146,17 @@ public:
                                         std::uint16_t fps_x10,
                                         std::uint64_t timestamp_us) noexcept;
 
+    // Publishes one complete replace-in-place camera.matrix document (the
+    // downsampled black/white grid Camera.cpp builds each capture). `text`
+    // is UTF-8 without a terminator and must fit kMaxCameraMatrixTextSize.
+    // Unlike camera.status this does NOT go through queue_[]: the document
+    // is large relative to the numeric samples, so it gets its own single
+    // staging slot -- mirrors bally_OS's publish_system_monitor(). A
+    // document produced while the previous one is still unflushed is
+    // dropped (QueueFull) rather than racing flush().
+    PublishResult publish_camera_matrix(const char* text, std::size_t length,
+                                        std::uint64_t timestamp_us) noexcept;
+
     // Sends and removes at most max_samples. A radio rejection drops that
     // sample and is counted, so one bad sample cannot stall the queue.
     std::size_t flush(std::size_t max_samples) noexcept;
@@ -146,10 +168,18 @@ public:
     static bool pack_camera_status(
         std::uint8_t state, std::uint32_t frame_count, std::uint16_t fps_x10,
         std::uint8_t output[kCameraStatusPayloadSize]) noexcept;
+    static bool pack_camera_matrix(
+        const char* text, std::size_t length,
+        std::uint8_t output[kMaxCameraMatrixPayloadSize],
+        std::size_t* bytes_written) noexcept;
 
 private:
+    // queue_[] only ever holds camera.status now (camera.matrix has its own
+    // staging slot, see matrix_stage_), so it is sized for the small sample
+    // and not the ~1.8 KB UTF-8 document -- same reasoning as bally_OS's own
+    // TelemetryPublisher.h comment on this constant.
     static constexpr std::size_t kMaxPayloadSize = kCameraStatusPayloadSize;
-    static constexpr std::size_t kMaxTopics = 1U;  // matches kSchemas today
+    static constexpr std::size_t kMaxTopics = 2U;  // matches kSchemas today
 public:
     // One topic times a handful of concurrent desktop sessions behind the
     // single ESP-NOW peer -- node_'s own btp::SubscriptionTable is what
@@ -164,6 +194,20 @@ private:
         std::uint16_t topic_id;
         std::uint16_t payload_size;
         std::uint8_t payload[kMaxPayloadSize];
+    };
+
+    // Out-of-band staging for the one large, low-rate, replace-in-place
+    // topic. Single-producer (publish_camera_matrix, camera task) /
+    // single-consumer (flush, comms task) handoff over `pending`: the
+    // producer fills the fields then release-stores true; the consumer
+    // acquire-loads, sends, then release-stores false. Neither side touches
+    // the payload while the other owns it. Mirrors bally_OS's MonitorStage.
+    struct MatrixStage {
+        std::atomic<bool> pending{false};
+        std::uint64_t timestamp_us = 0U;
+        std::uint32_t sequence = 0U;
+        std::uint16_t payload_size = 0U;
+        std::uint8_t payload[kMaxCameraMatrixPayloadSize]{};
     };
 
     struct TopicRuntime {
@@ -184,6 +228,7 @@ private:
     BtpSealFn seal_ = nullptr;
     void* seal_context_ = nullptr;
     Sample queue_[kQueueCapacity]{};
+    MatrixStage matrix_stage_{};
     TopicRuntime runtime_[kMaxTopics]{};
     const btp::SubscriptionTable* subscriptions_ = nullptr;
     bool runtime_initialized_ = false;

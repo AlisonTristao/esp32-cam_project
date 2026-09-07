@@ -24,7 +24,26 @@ constexpr TelemetryPublisher::TopicSchema kSchemas[] = {
              // frame stream (pixel data stays on the serial ASCII path)
      100U,   // min: 0.1 Hz
      1000U},  // default/nominal: 1 Hz
+    {TelemetryPublisher::kCameraMatrixTopicId,
+     TelemetryPublisher::kSchemaVersion,
+     "camera.matrix",
+     TelemetryPublisher::Encoding::Utf8,
+     nullptr,
+     0U,  // UTF8 is the complete topic body; it has no structured fields
+     TelemetryPublisher::kMaxCameraMatrixPayloadSize,
+     2000U,  // max: 2 Hz -- one fragmented ~1.85 KB document per tick
+     100U,   // min: 0.1 Hz
+     1000U},  // default/nominal: 1 Hz
 };
+
+// camera.matrix (UTF8) is the one topic btp::SampleWriter does not build --
+// its body is opaque text, not schema fields -- so its two-octet
+// schema_version prefix is still written here, same as bally_OS's
+// system.monitor.
+void write_u16_le(std::uint8_t* output, std::uint16_t value) noexcept {
+    output[0] = static_cast<std::uint8_t>(value);
+    output[1] = static_cast<std::uint8_t>(value >> 8U);
+}
 
 // Bounded spin: this lock is only ever held for a handful of field
 // reads/writes (no allocation, no radio call), same reasoning as bally_OS's
@@ -76,10 +95,90 @@ TelemetryPublisher::PublishResult TelemetryPublisher::publish_camera_status(
     return enqueue(kCameraStatusTopicId, payload, sizeof(payload), timestamp_us);
 }
 
+TelemetryPublisher::PublishResult TelemetryPublisher::publish_camera_matrix(
+    const char* text, std::size_t length, std::uint64_t timestamp_us) noexcept {
+    if (endpoint_ == nullptr) {
+        count_invalid();
+        return PublishResult::NotConfigured;
+    }
+
+    // Replace-in-place: if flush() has not taken the previous document yet,
+    // drop this one (a fresh matrix follows on the next capture) rather than
+    // overwrite a buffer the consumer may be reading.
+    if (matrix_stage_.pending.load(std::memory_order_acquire)) {
+        dropped_full_.fetch_add(1U, std::memory_order_relaxed);
+        RuntimeLockGuard guard(runtime_lock_);
+        if (guard.acquired()) {
+            init_runtime_if_needed();
+            const int idx = find_topic_index(kCameraMatrixTopicId);
+            if (idx >= 0) {
+                runtime_[static_cast<std::size_t>(idx)].samples_dropped_total += 1U;
+            }
+        }
+        return PublishResult::QueueFull;
+    }
+
+    // Not pending -> the producer owns matrix_stage_.payload. pack validates
+    // fully before writing a byte, so a rejected document leaves it untouched.
+    std::size_t payload_size = 0U;
+    if (!pack_camera_matrix(text, length, matrix_stage_.payload,
+                            &payload_size)) {
+        count_invalid();
+        return PublishResult::InvalidValue;
+    }
+
+    std::uint32_t sequence = 0U;
+    if (!endpoint_->try_reserve_sequence(&sequence)) {
+        count_invalid();
+        return PublishResult::SequenceUnavailable;
+    }
+
+    matrix_stage_.timestamp_us = timestamp_us;
+    matrix_stage_.sequence = sequence;
+    matrix_stage_.payload_size = static_cast<std::uint16_t>(payload_size);
+    matrix_stage_.pending.store(true, std::memory_order_release);
+
+    queued_total_.fetch_add(1U, std::memory_order_relaxed);
+    return PublishResult::Queued;
+}
+
 std::size_t TelemetryPublisher::flush(std::size_t max_samples) noexcept {
     if (endpoint_ == nullptr) return 0U;
 
     std::size_t processed = 0U;
+
+    // The out-of-band camera.matrix document is one logical sample no matter
+    // how many wire fragments it needs. Drain it before the numeric queue,
+    // same ordering bally_OS uses for system.monitor: its sequence was
+    // reserved earlier (low-rate topic), so sending it first keeps sequences
+    // ascending on the wire in the common case. send_logical_reserved() seals
+    // the whole document once, then fragments it; a failed seal stays
+    // fail-closed.
+    if (processed < max_samples &&
+        matrix_stage_.pending.load(std::memory_order_acquire)) {
+        const bool sent = endpoint_->send_logical_reserved(
+            btp::MessageType::Telemetry, kCameraMatrixTopicId,
+            matrix_stage_.sequence, matrix_stage_.payload,
+            matrix_stage_.payload_size, matrix_stage_.timestamp_us, seal_,
+            seal_context_);
+        if (sent) {
+            sent_total_.fetch_add(1U, std::memory_order_relaxed);
+            RuntimeLockGuard guard(runtime_lock_);
+            if (guard.acquired()) {
+                init_runtime_if_needed();
+                const int idx = find_topic_index(kCameraMatrixTopicId);
+                if (idx >= 0) {
+                    runtime_[static_cast<std::size_t>(idx)].bytes_sent_total +=
+                        matrix_stage_.payload_size;
+                }
+            }
+        } else {
+            send_failed_.fetch_add(1U, std::memory_order_relaxed);
+        }
+        matrix_stage_.pending.store(false, std::memory_order_release);
+        ++processed;
+    }
+
     while (processed < max_samples) {
         const std::uint32_t read = read_index_.load(std::memory_order_relaxed);
         const std::uint32_t write = write_index_.load(std::memory_order_acquire);
@@ -114,7 +213,9 @@ std::size_t TelemetryPublisher::flush(std::size_t max_samples) noexcept {
 std::size_t TelemetryPublisher::queued_count() const noexcept {
     const std::uint32_t write = write_index_.load(std::memory_order_acquire);
     const std::uint32_t read = read_index_.load(std::memory_order_acquire);
-    return static_cast<std::size_t>(write - read);
+    const std::size_t staged =
+        matrix_stage_.pending.load(std::memory_order_acquire) ? 1U : 0U;
+    return static_cast<std::size_t>(write - read) + staged;
 }
 
 TelemetryPublisher::Stats TelemetryPublisher::stats() const noexcept {
@@ -148,6 +249,23 @@ bool TelemetryPublisher::pack_camera_status(
            writer.put_u64(frame_count) == btp::MessageError::Ok &&
            writer.put_u64(fps_x10) == btp::MessageError::Ok &&
            writer.finish(&written) == btp::MessageError::Ok;
+}
+
+bool TelemetryPublisher::pack_camera_matrix(
+    const char* text, std::size_t length,
+    std::uint8_t output[kMaxCameraMatrixPayloadSize],
+    std::size_t* bytes_written) noexcept {
+    if (output == nullptr || bytes_written == nullptr ||
+        (text == nullptr && length != 0U) ||
+        length > kMaxCameraMatrixTextSize) {
+        return false;
+    }
+    write_u16_le(output, kSchemaVersion);
+    if (length != 0U) {
+        std::memcpy(output + 2U, text, length);
+    }
+    *bytes_written = length + 2U;
+    return true;
 }
 
 TelemetryPublisher::PublishResult TelemetryPublisher::enqueue(

@@ -105,8 +105,8 @@ public:
 
     // Bounds the sealed[] scratch a sealed send_logical() cuts fragments from.
     // The largest logical message this firmware sends is the UTF-8
-    // system.monitor telemetry document
-    // (TelemetryPublisher::kMaxSystemMonitorPayloadSize) -- a fragmented
+    // camera.matrix telemetry document
+    // (TelemetryPublisher::kMaxCameraMatrixPayloadSize) -- a fragmented
     // COMMAND_RESULT / STATUS / MANIFEST_DATA never gets close.
     // node_'s own receive-slot capacity (kNodeSlotBytes, BallyRobot.h) and
     // btp_command::kMaxLogicalRequestSize are independent receive / command

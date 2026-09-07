@@ -97,6 +97,17 @@ void CamRobot::bindProtocolTransport() noexcept {
         .u32("frame_count")
         .u16("fps", 0.1, "fps")
         .end();
+    // UTF8 body, no wire fields -- same catalog shape bally_OS uses for its
+    // own replace-in-place text topic (system.monitor). Rates mirror
+    // TelemetryPublisher's own camera.matrix TopicSchema entry.
+    node_->topic(TelemetryPublisher::kCameraMatrixTopicId,
+                TelemetryPublisher::kSchemaVersion, "camera.matrix",
+                /*fill=*/nullptr, /*fill_ctx=*/nullptr,
+                btp::TelemetryEncoding::Utf8, /*subscribable=*/true,
+                /*max_rate_millihz=*/2000U)
+        .min_rate(100U)
+        .default_rate(1000U)
+        .end();
     node_->begin();
     node_->serve_catalog();
     telemetry.bind_subscriptions(*node_->subscriptions());

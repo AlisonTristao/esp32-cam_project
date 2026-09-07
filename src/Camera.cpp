@@ -7,6 +7,7 @@
 #define DEFAULT_BW_THRESHOLD 180
 
 #include <cstdio>
+#include <string>
 
 #include "esp_camera.h"
 #include "esp_err.h"
@@ -66,16 +67,18 @@ esp_err_t camera_init() {
     return esp_camera_init(&config);
 }
 
-// Nao chamada por enquanto (ver o comentario no loop de captura em task()) --
-// mantida pronta para quando o streaming de frame virar ESP-NOW em vez de
-// serial.
-[[maybe_unused]] void print_binary_frame(camera_fb_t* fb) {
+// Downsamples fb's centered square crop to OUTPUT_COLS x OUTPUT_ROWS and
+// appends the ASCII black/white grid (each pixel '0'/'1' against
+// g_threshold) to `out` -- the same framing this file's serial dump used to
+// print directly, now built into a buffer so task() can publish it as the
+// camera.matrix telemetry document instead.
+bool build_binary_matrix(camera_fb_t* fb, std::string& out) {
     // Valida o formato e o tamanho antes de acessar o buffer.
     if (fb == nullptr || fb->buf == nullptr ||
         fb->format != PIXFORMAT_GRAYSCALE || fb->width == 0 ||
         fb->height == 0 || fb->height > fb->len / fb->width) {
         ESP_LOGE(kTag, "Framebuffer grayscale invalido ou incompleto");
-        return;
+        return false;
     }
 
     // Recorta o maior quadrado possivel bem no centro do frame.
@@ -89,22 +92,31 @@ esp_err_t camera_init() {
                  static_cast<unsigned int>(fb->width),
                  static_cast<unsigned int>(fb->height), OUTPUT_COLS,
                  OUTPUT_ROWS);
-        return;
+        return false;
     }
 
     const std::uint8_t threshold = g_threshold.load(std::memory_order_relaxed);
 
-    printf("FRAME\n%d x %d\n", OUTPUT_COLS, OUTPUT_ROWS);
+    out.clear();
+    out.reserve((OUTPUT_COLS + 1U) * OUTPUT_ROWS + 32U);
+    char header[32];
+    const int header_len =
+        std::snprintf(header, sizeof(header), "FRAME\n%d x %d\n", OUTPUT_COLS, OUTPUT_ROWS);
+    if (header_len > 0) {
+        out.append(header, static_cast<size_t>(header_len));
+    }
+
     for (size_t row = 0; row < OUTPUT_ROWS; row++) {
         const size_t y = y_offset + row * step_y;
         for (size_t col = 0; col < OUTPUT_COLS; col++) {
             const size_t x = x_offset + col * step_x;
             const std::uint8_t pixel = fb->buf[y * fb->width + x];
-            putchar(pixel >= threshold ? '1' : '0');
+            out.push_back(pixel >= threshold ? '1' : '0');
         }
-        putchar('\n');
+        out.push_back('\n');
     }
-    puts("---");
+    out += "---\n";
+    return true;
 }
 
 }  // namespace
@@ -130,6 +142,8 @@ void task(void* arg) {
     std::uint32_t frames_this_window = 0U;
     std::int64_t window_start_us = esp_timer_get_time();
     std::int64_t last_telemetry_us = window_start_us;
+    std::int64_t next_matrix_us = window_start_us;
+    std::string matrix;
 
     // Sem atraso artificial: atualiza na taxa maxima que camera e serial
     // permitirem -- comportamento inalterado em relacao ao main.c original.
@@ -141,16 +155,31 @@ void task(void* arg) {
             continue;
         }
 
-        // Dump ASCII desativado por enquanto: o streaming de frame vai sair
-        // por ESP-NOW mais adiante, nao pelo serial. print_binary_frame()
-        // fica pronta (downsampling + threshold) para quando isso for
-        // implementado.
+        const std::int64_t now_us = esp_timer_get_time();
+
+        // camera.matrix is a replace-in-place document (TelemetryPublisher's
+        // own staging slot, like bally_OS's system.monitor), so it is only
+        // worth downsampling+publishing when someone actually subscribed and
+        // only at that subscription's own effective rate -- same gating
+        // bally_OS's sampleTelemetry() applies to its own UTF8 topic.
+        if (robot != nullptr) {
+            const std::uint64_t period_us = robot->telemetry.topic_period_us(
+                TelemetryPublisher::kCameraMatrixTopicId);
+            if (period_us != 0U && now_us >= next_matrix_us) {
+                next_matrix_us = now_us + static_cast<std::int64_t>(period_us);
+                if (build_binary_matrix(fb, matrix)) {
+                    robot->telemetry.publish_camera_matrix(
+                        matrix.data(), matrix.size(),
+                        static_cast<std::uint64_t>(now_us));
+                }
+            }
+        }
+
         esp_camera_fb_return(fb);
 
         g_frame_count.fetch_add(1U, std::memory_order_relaxed);
         ++frames_this_window;
 
-        const std::int64_t now_us = esp_timer_get_time();
         if (now_us - window_start_us >= 1000000) {
             const std::uint16_t fps_x10 = static_cast<std::uint16_t>(
                 frames_this_window * 10000000ULL /
