@@ -31,9 +31,19 @@ constexpr TelemetryPublisher::TopicSchema kSchemas[] = {
      nullptr,
      0U,  // UTF8 is the complete topic body; it has no structured fields
      TelemetryPublisher::kMaxCameraMatrixPayloadSize,
-     2000U,  // max: 2 Hz -- one fragmented ~1.85 KB document per tick
-     100U,   // min: 0.1 Hz
-     1000U},  // default/nominal: 1 Hz
+     // max: 10 Hz -- not a real ceiling, a permissive one. The document is
+     // ~1.9 KB, fragmented into ~10 sealed ESP-NOW frames
+     // (kEspNowMaxPayloadSize - kBtpAeadTagSize = 194 B/fragment), and
+     // TxScheduler::pump() starts at most one send per comms-task tick
+     // (~10 ms) -- so ~100 ms/document (~10 Hz) is already close to the
+     // radio's own pacing limit. publish_camera_matrix()'s replace-in-place
+     // drop (matrix_stage_ still pending) is what actually throttles this to
+     // whatever the radio can sustain; this ceiling just stops it from
+     // being lower than that on purpose.
+     10000U,
+     100U,    // min: 0.1 Hz
+     10000U},  // default/nominal: same as max -- a subscriber that does not
+               // ask for a specific rate gets the fastest one right away
 };
 
 // camera.matrix (UTF8) is the one topic btp::SampleWriter does not build --
