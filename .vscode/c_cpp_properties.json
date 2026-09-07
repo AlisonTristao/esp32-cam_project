@@ -502,6 +502,7 @@
                 "BOARD_HAS_PSRAM",
                 "MAC_ADDR=0xDC,0xDA,0x0C,0x30,0xAA,0x5C",
                 "DEV_EMBEDDED_KEY_L",
+                "TINYSHELL_COLOR",
                 ""
             ],
             "cStandard": "gnu23",

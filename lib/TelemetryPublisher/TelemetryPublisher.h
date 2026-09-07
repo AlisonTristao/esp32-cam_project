@@ -39,18 +39,27 @@ public:
     // same non-nullable fixed-width layout btp::SampleWriter uses for
     // bally_OS's robot.state/protocol.test (see its TelemetryPublisher.cpp).
     static constexpr std::size_t kCameraStatusPayloadSize = 9U;
-    // The camera.matrix document is Camera.cpp's downsampled black/white
-    // grid (OUTPUT_COLS x OUTPUT_ROWS, header+footer included), same framing
-    // bally_OS's system.monitor uses for its own UTF-8 replace-in-place
-    // topic. TELEMETRY reserves the first two payload octets for
-    // schema_version, leaving this much for the text itself.
-    // BtpTransport.h's kMaxLogicalPayloadSize must stay >= the payload size
-    // below.
-    static constexpr std::size_t kMaxCameraMatrixTextSize = 1900U;
+    // The camera.matrix document is Camera.cpp's downsampled grid, packed
+    // 1/2/4/8 bits per pixel (MSB-first, each row padded to a byte) behind a
+    // 3-byte {rows, cols, bits_per_pixel} header -- see build_matrix's own
+    // comment for the exact layout. Runtime-sized (cam::g_matrix_size,
+    // cam::g_bits_per_pixel; shell "cam set_size"/"cam set_depth"), so this
+    // is a ceiling, not a fixed document size.
+    // TELEMETRY reserves the first two payload octets for schema_version,
+    // leaving this much for the body itself. BtpTransport.h's
+    // kMaxLogicalPayloadSize must stay >= the payload size below.
+    static constexpr std::size_t kMaxCameraMatrixBodySize = 1900U;
     static constexpr std::size_t kMaxCameraMatrixPayloadSize =
-        kMaxCameraMatrixTextSize + 2U;
+        kMaxCameraMatrixBodySize + 2U;
 
-    enum class Encoding : std::uint8_t { Utf8 = 0x02U, PackedLe = 0x05U };
+    // Wire values from docs/telemetry.md section 8 (btp::TelemetryEncoding).
+    // camera.matrix carries OpaqueBytes now (a packed bitmap, not text);
+    // camera.status stays PackedLe (btp::SampleWriter fields).
+    enum class Encoding : std::uint8_t {
+        OpaqueBytes = 0x01U,
+        Utf8 = 0x02U,
+        PackedLe = 0x05U,
+    };
 
     // The field's wire type is btp::WireType (telemetry.md section 13's octet
     // values). The subset btp::SampleWriter/btp::SampleReader consume.
@@ -147,14 +156,14 @@ public:
                                         std::uint64_t timestamp_us) noexcept;
 
     // Publishes one complete replace-in-place camera.matrix document (the
-    // downsampled black/white grid Camera.cpp builds each capture). `text`
-    // is UTF-8 without a terminator and must fit kMaxCameraMatrixTextSize.
-    // Unlike camera.status this does NOT go through queue_[]: the document
-    // is large relative to the numeric samples, so it gets its own single
+    // bit-packed black/white grid Camera.cpp builds each capture). `body` is
+    // opaque bytes and must fit kMaxCameraMatrixBodySize. Unlike
+    // camera.status this does NOT go through queue_[]: the document is
+    // large relative to the numeric samples, so it gets its own single
     // staging slot -- mirrors bally_OS's publish_system_monitor(). A
     // document produced while the previous one is still unflushed is
     // dropped (QueueFull) rather than racing flush().
-    PublishResult publish_camera_matrix(const char* text, std::size_t length,
+    PublishResult publish_camera_matrix(const char* body, std::size_t length,
                                         std::uint64_t timestamp_us) noexcept;
 
     // Sends and removes at most max_samples. A radio rejection drops that
@@ -169,7 +178,7 @@ public:
         std::uint8_t state, std::uint32_t frame_count, std::uint16_t fps_x10,
         std::uint8_t output[kCameraStatusPayloadSize]) noexcept;
     static bool pack_camera_matrix(
-        const char* text, std::size_t length,
+        const char* body, std::size_t length,
         std::uint8_t output[kMaxCameraMatrixPayloadSize],
         std::size_t* bytes_written) noexcept;
 

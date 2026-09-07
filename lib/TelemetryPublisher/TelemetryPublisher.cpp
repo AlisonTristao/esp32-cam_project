@@ -27,9 +27,9 @@ constexpr TelemetryPublisher::TopicSchema kSchemas[] = {
     {TelemetryPublisher::kCameraMatrixTopicId,
      TelemetryPublisher::kSchemaVersion,
      "camera.matrix",
-     TelemetryPublisher::Encoding::Utf8,
+     TelemetryPublisher::Encoding::OpaqueBytes,
      nullptr,
-     0U,  // UTF8 is the complete topic body; it has no structured fields
+     0U,  // OpaqueBytes is the complete topic body; it has no structured fields
      TelemetryPublisher::kMaxCameraMatrixPayloadSize,
      // max: 10 Hz -- not a real ceiling, a permissive one. The document is
      // ~1.9 KB, fragmented into ~10 sealed ESP-NOW frames
@@ -46,9 +46,9 @@ constexpr TelemetryPublisher::TopicSchema kSchemas[] = {
                // ask for a specific rate gets the fastest one right away
 };
 
-// camera.matrix (UTF8) is the one topic btp::SampleWriter does not build --
-// its body is opaque text, not schema fields -- so its two-octet
-// schema_version prefix is still written here, same as bally_OS's
+// camera.matrix (OpaqueBytes) is the one topic btp::SampleWriter does not
+// build -- its body is a packed bitmap, not schema fields -- so its
+// two-octet schema_version prefix is still written here, same as bally_OS's
 // system.monitor.
 void write_u16_le(std::uint8_t* output, std::uint16_t value) noexcept {
     output[0] = static_cast<std::uint8_t>(value);
@@ -106,7 +106,7 @@ TelemetryPublisher::PublishResult TelemetryPublisher::publish_camera_status(
 }
 
 TelemetryPublisher::PublishResult TelemetryPublisher::publish_camera_matrix(
-    const char* text, std::size_t length, std::uint64_t timestamp_us) noexcept {
+    const char* body, std::size_t length, std::uint64_t timestamp_us) noexcept {
     if (endpoint_ == nullptr) {
         count_invalid();
         return PublishResult::NotConfigured;
@@ -131,7 +131,7 @@ TelemetryPublisher::PublishResult TelemetryPublisher::publish_camera_matrix(
     // Not pending -> the producer owns matrix_stage_.payload. pack validates
     // fully before writing a byte, so a rejected document leaves it untouched.
     std::size_t payload_size = 0U;
-    if (!pack_camera_matrix(text, length, matrix_stage_.payload,
+    if (!pack_camera_matrix(body, length, matrix_stage_.payload,
                             &payload_size)) {
         count_invalid();
         return PublishResult::InvalidValue;
@@ -262,17 +262,17 @@ bool TelemetryPublisher::pack_camera_status(
 }
 
 bool TelemetryPublisher::pack_camera_matrix(
-    const char* text, std::size_t length,
+    const char* body, std::size_t length,
     std::uint8_t output[kMaxCameraMatrixPayloadSize],
     std::size_t* bytes_written) noexcept {
     if (output == nullptr || bytes_written == nullptr ||
-        (text == nullptr && length != 0U) ||
-        length > kMaxCameraMatrixTextSize) {
+        (body == nullptr && length != 0U) ||
+        length > kMaxCameraMatrixBodySize) {
         return false;
     }
     write_u16_le(output, kSchemaVersion);
     if (length != 0U) {
-        std::memcpy(output + 2U, text, length);
+        std::memcpy(output + 2U, body, length);
     }
     *bytes_written = length + 2U;
     return true;

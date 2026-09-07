@@ -13,6 +13,60 @@ namespace cam {
 // read/set over the shell (both BTP channels, or the local serial console).
 extern std::atomic<std::uint8_t> g_threshold;
 
+// Shared bounds (pixels) for the two square sizes build_matrix deals with:
+// g_matrix_size (the grid it sends) and g_crop_size (the centered source
+// region it samples that grid from, i.e. the "zoom" -- see its own comment
+// below). kMinMatrixSize just keeps both above a degenerate sliver;
+// kMaxMatrixSize is the side of the centered square Camera.cpp can crop out
+// of a FRAMESIZE_QQVGA frame (160x120 -> 120x120) -- raise it only alongside
+// a bigger camera_init() frame_size. For g_matrix_size it doubles as "one
+// grid cell per native pixel, no downsampling" at the full crop, and (at
+// g_bits_per_pixel's default of 1) keeps the bit-packed body (build_matrix's
+// header+bitmap) comfortably under TelemetryPublisher::kMaxCameraMatrixBodySize:
+// 120 rows x ceil(120/8) bytes/row = 1800 bytes. This is a hard ceiling on
+// the grid regardless of depth; the achievable grid at higher
+// g_bits_per_pixel is smaller still and enforced separately by
+// fits_matrix_budget (e.g. 8 bits/pixel tops out around 120x120 -> wildly
+// over budget, so cam_set_depth/cam_set_size clamp well below kMaxMatrixSize
+// once depth grows).
+inline constexpr std::uint8_t kMinMatrixSize = 4U;
+inline constexpr std::uint8_t kMaxMatrixSize = 120U;
+
+// Side (in pixels) of the square grid camera.matrix sends, runtime-
+// adjustable via "cam" (CamShell.cpp's cam_set_size).
+extern std::atomic<std::uint8_t> g_matrix_size;
+
+// Side (in pixels) of the centered square build_matrix samples
+// g_matrix_size's grid from -- shrinking it below kMaxMatrixSize is a
+// digital zoom (the same grid resolution now covers less of the sensor);
+// growing g_matrix_size past this instead upsamples (repeats source
+// pixels). Defaults to kMaxMatrixSize, i.e. today's fixed behavior: the
+// full centered square, no zoom. Runtime-adjustable via "cam"
+// (CamShell.cpp's cam_set_crop).
+extern std::atomic<std::uint8_t> g_crop_size;
+
+// Sample depth build_matrix packs each grid cell to: 1 (today's default --
+// g_threshold black/white bit), 2, 4 or 8 (grayscale, top N bits of the
+// sensor's 8-bit sample, no threshold involved). Runtime-adjustable via
+// "cam" (CamShell.cpp's cam_set_depth). Widening this grows the wire body
+// roughly linearly (8x at bpp=8 vs bpp=1 for the same grid), so
+// cam_set_depth/cam_set_size both reject a combination fits_matrix_budget
+// rejects -- see that function.
+extern std::atomic<std::uint8_t> g_bits_per_pixel;
+
+// Whether `bits_per_pixel` is one of the depths build_matrix supports
+// (1, 2, 4 or 8 -- each evenly divides a byte, so no sample ever straddles
+// a byte boundary).
+bool is_valid_bit_depth(std::uint8_t bits_per_pixel) noexcept;
+
+// Whether a (grid_size, bits_per_pixel) combination's wire body --
+// TelemetryPublisher's 3-byte {rows, cols, bits_per_pixel} header plus the
+// packed grid -- fits TelemetryPublisher::kMaxCameraMatrixBodySize. Shared
+// by cam_set_size and cam_set_depth (CamShell.cpp) so neither setter alone
+// can put the other's already-stored value over budget.
+bool fits_matrix_budget(std::uint8_t grid_size,
+                         std::uint8_t bits_per_pixel) noexcept;
+
 // Updated once per captured frame; read by "cam -status" and published as
 // the camera.status telemetry sample.
 extern std::atomic<std::uint32_t> g_frame_count;

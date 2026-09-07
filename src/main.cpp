@@ -40,6 +40,14 @@ std::atomic<std::uint64_t> g_frames_rx{0U};
 // synchronously, so a plain buffer cleared before each command is enough.
 std::string g_shell_output;
 
+// Single sink for anything a command wants to mirror back over TERMINAL_OUT:
+// TinyShell::set_output_callback() feeds it directly (help dumps, generic
+// pass/fail line); register_cam_shell_commands() gets the exact same
+// function so cam_status()/cam_threshold()/etc.'s own diagnostic text rides
+// along in g_shell_output too, instead of only reaching the local UART via
+// printf().
+void append_shell_output(const std::string& text) { g_shell_output += text; }
+
 #ifdef MAC_ADDR
 constexpr std::uint8_t kDonglePeerMac[6] = {MAC_ADDR};
 #endif
@@ -246,9 +254,8 @@ extern "C" void app_main(void) {
     }
 
     g_robot.shell.begin();
-    register_cam_shell_commands(g_robot.shell);
-    g_robot.shell.set_output_callback(
-        [](const std::string& text) { g_shell_output += text; });
+    register_cam_shell_commands(g_robot.shell, append_shell_output);
+    g_robot.shell.set_output_callback(append_shell_output);
 
     if (!configure_communication()) {
         ESP_LOGE(kTag, "Falha ao inicializar Wi-Fi/ESP-NOW");
