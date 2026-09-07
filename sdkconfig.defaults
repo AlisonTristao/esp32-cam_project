@@ -1,0 +1,20 @@
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=800
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+
+# TinyShell's run_command_line() and std::string/std::vector throughout the
+# ported BTP/CommandProcessor/TerminalResponder libs need C++ exceptions,
+# which ESP-IDF disables by default. Same flag bally_OS sets (its
+# sdkconfig.defaults) for the same reason.
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+
+# This board's physical flash is 4MB (PlatformIO's own "esp32cam" board
+# definition says so, and warns "Flash memory size mismatch... found 2MB"
+# against the default this file used to leave unset). Wifi+ESP-NOW+BTP+
+# TinyShell+camera together need more room than the 2MB single-app default
+# partition table budgets for, so this also switches to the "large" single-
+# app table instead of just the flash-size constant.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
