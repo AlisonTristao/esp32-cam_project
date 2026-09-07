@@ -1,9 +1,10 @@
 #include "Camera.h"
 
 #define OUTPUT_ROWS 30
-// Caracteres do monitor serial sao ~2x mais altos que largos, entao usamos o
-// dobro de colunas para o resultado impresso parecer visualmente quadrado.
-#define OUTPUT_COLS (OUTPUT_ROWS * 2)
+// Grade quadrada de verdade (linhas x colunas) -- o dobro de colunas de
+// antes so compensava a fonte do monitor serial, que nao se aplica mais
+// agora que a matriz vai pelo camera.matrix telemetry, nao pelo console.
+#define OUTPUT_COLS OUTPUT_ROWS
 #define DEFAULT_BW_THRESHOLD 180
 
 #include <cstdio>
