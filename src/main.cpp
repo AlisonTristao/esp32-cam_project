@@ -31,6 +31,15 @@ CamRobot g_robot;
 QueueHandle_t g_shell_queue = nullptr;
 std::atomic<std::uint64_t> g_frames_rx{0U};
 
+// Accumulates whatever the shell's active command writes through
+// TinyShell::output_callback (help dumps, MODULE_NOT_FOUND's embedded help,
+// run_command_line()'s own generic status line) so shell_task can hand it to
+// TerminalResponder::deliver_command_output() -- mirrors bally_OS's
+// Logger::begin_capture/end_capture, minus the multi-task bookkeeping: this
+// firmware has exactly one shell task and it calls run_command_line()
+// synchronously, so a plain buffer cleared before each command is enough.
+std::string g_shell_output;
+
 #ifdef MAC_ADDR
 constexpr std::uint8_t kDonglePeerMac[6] = {MAC_ADDR};
 #endif
@@ -173,13 +182,14 @@ void shell_task(void* /*arg*/) {
             continue;
         }
 
+        g_shell_output.clear();
         const std::uint8_t status = g_robot.shell.run_command_line(cmd.text);
         const std::uint64_t us = now_us();
 
         if (cmd.from_terminal) {
             g_robot.terminal_responder.deliver_command_output(
-                cmd.terminal_source_id, cmd.terminal_boot_id, cmd.text,
-                status);
+                cmd.terminal_source_id, cmd.terminal_boot_id,
+                g_shell_output.c_str(), status);
         } else {
             CommandProcessor::ResultView result{};
             if (g_robot.command_processor.complete(cmd.cache_slot, status, us,
@@ -237,6 +247,8 @@ extern "C" void app_main(void) {
 
     g_robot.shell.begin();
     register_cam_shell_commands(g_robot.shell);
+    g_robot.shell.set_output_callback(
+        [](const std::string& text) { g_shell_output += text; });
 
     if (!configure_communication()) {
         ESP_LOGE(kTag, "Falha ao inicializar Wi-Fi/ESP-NOW");
