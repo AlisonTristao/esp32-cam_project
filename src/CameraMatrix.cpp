@@ -72,11 +72,24 @@ bool encode_matrix(const std::uint8_t* samples, std::uint8_t rows,
         }
     }
 
-    // Fix the reference for the entire region, even when its wire run splits.
-    auto reference = scratch[0];
-    for (std::size_t i = 1; i < count; ++i) {
-        if (!compatible(scratch[i], reference, tolerance)) reference = scratch[i];
-        scratch[i] = reference;
+    // Group per row (never across the row seam -- see above) and slide the
+    // compatibility check against each pixel's immediate original neighbor
+    // instead of a reference frozen at the group's first pixel. A fixed
+    // anchor lets small per-step drift accumulate unnoticed and then forces
+    // an oversized jump once the cumulative drift finally exceeds tolerance,
+    // painting a false hard edge through a smooth gradient. Comparing to the
+    // previous original sample tracks the gradient instead, at the cost of
+    // breaking a run sooner in a noisy image.
+    for (std::size_t row = 0; row < rows; ++row) {
+        auto* row_data = scratch + row * cols;
+        auto previous = row_data[0];
+        auto reference = row_data[0];
+        for (std::size_t col = 1; col < cols; ++col) {
+            const auto original = row_data[col];
+            if (!compatible(original, previous, tolerance)) reference = original;
+            row_data[col] = reference;
+            previous = original;
+        }
     }
     const unsigned count_bits = depth == 8U ? 8U : 8U - depth;
     const std::size_t max_run = 1U << count_bits;

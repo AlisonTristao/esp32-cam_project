@@ -90,7 +90,7 @@ void codec_cases() {
     auto gradient = encode(image, 8, 8, 4, 2);
     assert(gradient.filtered[3 * 8] == 7);
     assert(gradient.filtered[3 * 8 + 5] == 7);
-    assert(gradient.filtered[3 * 8 + 6] == 10); // Fixed anchor, no drift to 7.
+    assert(gradient.filtered[3 * 8 + 6] == 7); // Sliding reference tracks the ramp, no jump to 10.
     auto exact = encode(image, 8, 8, 4, 0);
     assert(exact.filtered == image);
 
