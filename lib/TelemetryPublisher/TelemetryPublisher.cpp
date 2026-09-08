@@ -31,18 +31,17 @@ constexpr TelemetryPublisher::TopicSchema kSchemas[] = {
      nullptr,
      0U,  // OpaqueBytes is the complete topic body; it has no structured fields
      TelemetryPublisher::kMaxCameraMatrixPayloadSize,
-     // max: 10 Hz -- not a real ceiling, a permissive one. The document is
+    // max: 100 Hz -- a permissive subscription ceiling. The document is
      // ~1.9 KB, fragmented into ~10 sealed ESP-NOW frames
      // (kEspNowMaxPayloadSize - kBtpAeadTagSize = 194 B/fragment), and
      // TxScheduler::pump() starts at most one send per comms-task tick
-     // (~10 ms) -- so ~100 ms/document (~10 Hz) is already close to the
-     // radio's own pacing limit. publish_camera_matrix()'s replace-in-place
-     // drop (matrix_stage_ still pending) is what actually throttles this to
-     // whatever the radio can sustain; this ceiling just stops it from
-     // being lower than that on purpose.
-     10000U,
+    // (~10 ms) -- the actual sustainable rate depends on frame size and
+    // delivery callbacks. publish_camera_matrix()'s replace-in-place drop
+    // (matrix_stage_ still pending) limits backlog while this ceiling lets
+    // the operator test the highest requested rate.
+    100000U,
      100U,    // min: 0.1 Hz
-     10000U},  // default/nominal: same as max -- a subscriber that does not
+    100000U},  // default/nominal: 100 Hz -- a subscriber that does not
                // ask for a specific rate gets the fastest one right away
 };
 

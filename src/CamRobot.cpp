@@ -101,15 +101,15 @@ void CamRobot::bindProtocolTransport() noexcept {
     // build_binary_matrix), no wire fields -- same catalog shape bally_OS
     // uses for its own replace-in-place text topic (system.monitor), just a
     // different encoding tag. Rates mirror TelemetryPublisher's own
-    // camera.matrix TopicSchema entry (see its comment there for why 10 Hz
-    // is a permissive ceiling, not a target).
+    // camera.matrix TopicSchema entry (100 Hz is a permissive ceiling and
+    // default; the sustainable rate still depends on frame delivery).
     node_->topic(TelemetryPublisher::kCameraMatrixTopicId,
                 TelemetryPublisher::kSchemaVersion, "camera.matrix",
                 /*fill=*/nullptr, /*fill_ctx=*/nullptr,
                 btp::TelemetryEncoding::OpaqueBytes, /*subscribable=*/true,
-                /*max_rate_millihz=*/10000U)
+                /*max_rate_millihz=*/100000U)
         .min_rate(100U)
-        .default_rate(10000U)
+            .default_rate(100000U)
         .end();
     node_->begin();
     node_->serve_catalog();

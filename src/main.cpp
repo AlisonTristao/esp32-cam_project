@@ -18,6 +18,7 @@
 #include "CamRobot.h"
 #include "CamShell.h"
 #include "Camera.h"
+#include "CameraConfig.h"
 
 #ifdef DEV_EMBEDDED_KEY_L
 #include "dev_key_l_generated.h"
@@ -179,7 +180,8 @@ void comms_task(void* /*arg*/) {
             g_robot.status_reporter.publish(0U, us, counters, us);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10));
+        // Run the communication pump at the FreeRTOS tick rate (1 ms).
+        vTaskDelay(1);
     }
 }
 
@@ -226,6 +228,19 @@ extern "C" void app_main(void) {
                      "bally.key invalido/ausente (%s)",
                      KeyStore::error_field(g_robot.key_store.last_error()));
         }
+
+        // Best-effort: an absent/invalid camera.cfg just leaves the atomics
+        // at their DEFAULT_* value (Camera.cpp), same as today's behavior
+        // before this file existed -- unlike bally.key, nothing is
+        // fail-closed on it.
+        const cam::ConfigError config_error =
+            cam::load_config_from_card(g_robot.sd_card);
+        if (config_error == cam::ConfigError::Ok) {
+            ESP_LOGI(kTag, "camera.cfg carregado do cartao SD");
+        } else if (config_error != cam::ConfigError::File) {
+            ESP_LOGW(kTag, "camera.cfg invalido (%s), usando padroes",
+                     cam::config_error_field(config_error));
+        }
     } else {
         ESP_LOGW(kTag, "Cartao SD nao montado");
     }
@@ -254,7 +269,8 @@ extern "C" void app_main(void) {
     }
 
     g_robot.shell.begin();
-    register_cam_shell_commands(g_robot.shell, append_shell_output);
+    register_cam_shell_commands(g_robot.shell, append_shell_output,
+                               g_robot.sd_card);
     g_robot.shell.set_output_callback(append_shell_output);
 
     if (!configure_communication()) {
@@ -276,7 +292,17 @@ extern "C" void app_main(void) {
     // before fragmenting -- plus whatever the AEAD call underneath (mbedtls/
     // PSA GCM) needs on top of that. 4096 overflowed on the very first
     // STATUS publish (next_status_us starts at 0).
-    xTaskCreate(comms_task, "comms", 12288, nullptr, 4, nullptr);
+    //
+    // Pinned to core 1 (with "camera"), NOT core 0: core 0 is where
+    // ESP-IDF's own Wi-Fi/ESP-NOW driver task runs, at a priority well above
+    // this task's 4. Pinning comms there let that driver task starve it for
+    // seconds at a time, during which camera.matrix's single replace-in-
+    // place stage (TelemetryPublisher::matrix_stage_) sat pending and every
+    // fresh capture got dropped -- the image only advancing every few
+    // seconds. comms_task's own priority (4) already beats "camera"'s (3),
+    // so co-locating them still lets comms preempt camera on demand.
+    xTaskCreatePinnedToCore(comms_task, "comms", 12288, nullptr, 4, nullptr,
+                            1);
     xTaskCreate(shell_task, "shell", 8192, nullptr, 2, nullptr);
     xTaskCreatePinnedToCore(cam::task, "camera", 8192, &g_robot, 3, nullptr, 1);
 

@@ -102,3 +102,21 @@ bool SDCard::read_file(const char* path, void* buffer, size_t capacity,
     if (bytes_read != nullptr) *bytes_read = read;
     return true;
 }
+
+bool SDCard::write_file(const char* path, const void* data,
+                        size_t length) const {
+    if (data == nullptr && length > 0) return false;
+
+    char full_path[kMaxPathLength];
+    if (!make_path(path, full_path, sizeof(full_path))) return false;
+
+    // Write mode creates the file or replaces all previous content.
+    FILE* file = fopen(full_path, "wb");
+    if (file == nullptr) return false;
+
+    const bool written = length == 0 || fwrite(data, 1, length, file) == length;
+    const bool flushed = written && fflush(file) == 0;
+    const bool closed = fclose(file) == 0;
+
+    return written && flushed && closed;
+}

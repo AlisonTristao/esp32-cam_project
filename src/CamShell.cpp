@@ -6,9 +6,11 @@
 #include <string>
 #include <utility>
 
+#include <SDCard.h>
 #include <TinyShell.h>
 
 #include "Camera.h"
+#include "CameraConfig.h"
 
 namespace {
 
@@ -23,6 +25,11 @@ namespace {
 // too is what makes e.g. "cam -threshold" show its value in TraceView's
 // Terminal instead of only "executado com sucesso".
 std::function<void(const std::string&)> g_emit = [](const std::string&) {};
+
+// Set once by register_cam_shell_commands() to CamRobot::sd_card, so
+// cam_save/cam_load can reach the card without every other "cam" command
+// (which only ever touch the atomics) needing to know it exists.
+SDCard* g_sd_card = nullptr;
 
 // Formats once: local console (printf's original destination, unchanged)
 // and the remote-terminal sink above both get the same text.
@@ -128,11 +135,49 @@ std::uint8_t cam_set_crop(std::uint8_t value) {
     return RESULT_OK;
 }
 
+std::uint8_t cam_save() {
+    if (g_sd_card == nullptr || !g_sd_card->is_mounted()) {
+        cam_print("cam: cartao SD nao montado, nada foi salvo\n");
+        return RESULT_ERROR;
+    }
+    const cam::ConfigError error = cam::save_config_to_card(*g_sd_card);
+    if (error != cam::ConfigError::Ok) {
+        cam_print("cam: falha ao salvar %s em " CAMERA_CONFIG_FILE " (%s)\n",
+                 CAMERA_CONFIG_FILE, cam::config_error_field(error));
+        return RESULT_ERROR;
+    }
+    cam_print("cam: configuracao salva em " CAMERA_CONFIG_FILE "\n");
+    return RESULT_OK;
+}
+
+std::uint8_t cam_load() {
+    if (g_sd_card == nullptr || !g_sd_card->is_mounted()) {
+        cam_print("cam: cartao SD nao montado, nada foi carregado\n");
+        return RESULT_ERROR;
+    }
+    const cam::ConfigError error = cam::load_config_from_card(*g_sd_card);
+    if (error != cam::ConfigError::Ok) {
+        cam_print("cam: falha ao carregar " CAMERA_CONFIG_FILE " (%s)\n",
+                 cam::config_error_field(error));
+        return RESULT_ERROR;
+    }
+    cam_print(
+        "cam: configuracao carregada de " CAMERA_CONFIG_FILE
+        " (threshold=%u size=%u crop=%u depth=%u)\n",
+        static_cast<unsigned>(cam::g_threshold.load()),
+        static_cast<unsigned>(cam::g_matrix_size.load()),
+        static_cast<unsigned>(cam::g_crop_size.load()),
+        static_cast<unsigned>(cam::g_bits_per_pixel.load()));
+    return RESULT_OK;
+}
+
 }  // namespace
 
 void register_cam_shell_commands(TinyShell& shell,
-                                 std::function<void(const std::string&)> emit) {
+                                 std::function<void(const std::string&)> emit,
+                                 SDCard& sd_card) {
     g_emit = std::move(emit);
+    g_sd_card = &sd_card;
 
     shell.create_module("cam", "Camera de visao (ESP32-CAM)");
     shell.add(cam_status, "status",
@@ -167,5 +212,13 @@ void register_cam_shell_commands(TinyShell& shell,
     shell.add(cam_set_crop, "set_crop",
              "Ajusta o recorte central (NxN, em pixels) usado antes de "
              "reamostrar (4-120); menor = mais zoom",
+             "cam");
+    shell.add(cam_save, "save",
+             "Salva threshold/size/depth/crop atuais em " CAMERA_CONFIG_FILE
+             " no cartao SD",
+             "cam");
+    shell.add(cam_load, "load",
+             "Recarrega threshold/size/depth/crop de " CAMERA_CONFIG_FILE
+             " no cartao SD",
              "cam");
 }

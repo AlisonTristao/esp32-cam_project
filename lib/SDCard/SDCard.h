@@ -59,6 +59,17 @@ public:
     bool read_file(const char* path, void* buffer, size_t capacity,
                    size_t* bytes_read = nullptr) const;
 
+    /**
+     * @brief Write a whole file, replacing any previous content.
+     *
+     * @param path Relative path or complete path below the mount point.
+     * @param data Bytes to write. May be null only when length is 0.
+     * @param length Number of bytes to write.
+     * @return true when the file was created/replaced, written, flushed and
+     * closed without error.
+     */
+    bool write_file(const char* path, const void* data, size_t length) const;
+
 private:
     static constexpr size_t kMaxPathLength = 256;
 

@@ -3,6 +3,7 @@ CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_ESP_INT_WDT_TIMEOUT_MS=800
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+CONFIG_FREERTOS_HZ=1000
 
 # TinyShell's run_command_line() and std::string/std::vector throughout the
 # ported BTP/CommandProcessor/TerminalResponder libs need C++ exceptions,
