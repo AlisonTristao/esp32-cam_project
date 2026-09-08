@@ -48,6 +48,13 @@ std::uint8_t cam_status() {
              static_cast<unsigned>(cam::g_state.load()),
              static_cast<unsigned long>(cam::g_frame_count.load()),
              cam::g_fps_x10.load() / 10.0, static_cast<unsigned>(cam::g_threshold.load()));
+    cam_print("cam: size=%u depth=%u delta=%u raw_bytes=%u encoded_bytes=%u format=%s\n",
+              static_cast<unsigned>(cam::g_matrix_size.load()),
+              static_cast<unsigned>(cam::g_bits_per_pixel.load()),
+              static_cast<unsigned>(cam::g_delta.load()),
+              static_cast<unsigned>(cam::g_matrix_raw_bytes.load()),
+              static_cast<unsigned>(cam::g_matrix_encoded_bytes.load()),
+              cam::g_matrix_encoding.load() == 1U ? "RLE" : "RAW");
     return RESULT_OK;
 }
 
@@ -117,6 +124,21 @@ std::uint8_t cam_set_depth(std::uint8_t value) {
     return RESULT_OK;
 }
 
+std::uint8_t cam_delta() {
+    const auto depth = cam::g_bits_per_pixel.load();
+    const unsigned delta = cam::g_delta.load();
+    const unsigned maximum = (1U << depth) - 1U;
+    const unsigned effective = depth == 1U ? 0U : (delta < maximum ? delta : maximum);
+    cam_print("cam: delta=%u effective=%u depth=%u (RLE adaptativo sempre ativo)\n",
+              delta, effective, static_cast<unsigned>(depth));
+    return RESULT_OK;
+}
+
+std::uint8_t cam_set_delta(std::uint8_t value) {
+    cam::g_delta.store(value);
+    return cam_delta();
+}
+
 std::uint8_t cam_crop() {
     const std::uint8_t crop = cam::g_crop_size.load();
     cam_print("cam: crop=%ux%u (min=%u max=%u)\n", static_cast<unsigned>(crop),
@@ -163,11 +185,12 @@ std::uint8_t cam_load() {
     }
     cam_print(
         "cam: configuracao carregada de " CAMERA_CONFIG_FILE
-        " (threshold=%u size=%u crop=%u depth=%u)\n",
+        " (threshold=%u size=%u crop=%u depth=%u delta=%u)\n",
         static_cast<unsigned>(cam::g_threshold.load()),
         static_cast<unsigned>(cam::g_matrix_size.load()),
         static_cast<unsigned>(cam::g_crop_size.load()),
-        static_cast<unsigned>(cam::g_bits_per_pixel.load()));
+        static_cast<unsigned>(cam::g_bits_per_pixel.load()),
+        static_cast<unsigned>(cam::g_delta.load()));
     return RESULT_OK;
 }
 
@@ -181,7 +204,7 @@ void register_cam_shell_commands(TinyShell& shell,
 
     shell.create_module("cam", "Camera de visao (ESP32-CAM)");
     shell.add(cam_status, "status",
-             "Mostra state/frame_count/fps/threshold atuais", "cam");
+             "Mostra estado, configuracao e bytes RAW/codificados", "cam");
     shell.add(cam_threshold, "threshold", "Mostra o limiar preto/branco atual",
              "cam");
     shell.add(cam_set_threshold, "set_threshold",
@@ -203,6 +226,9 @@ void register_cam_shell_commands(TinyShell& shell,
              "Ajusta a profundidade da matriz (1=P&B, 2/4/8=escala de "
              "cinza); reduz o tamanho maximo permitido",
              "cam");
+    shell.add(cam_delta, "delta", "Mostra delta configurado e efetivo", "cam");
+    shell.add(cam_set_delta, "set_delta",
+              "Tolerancia 0-255 nos niveis quantizados; depth=1 usa zero", "cam");
     shell.add(cam_crop, "crop",
              "Mostra o recorte central (NxN, em pixels) usado antes de "
              "reamostrar",
@@ -214,11 +240,11 @@ void register_cam_shell_commands(TinyShell& shell,
              "reamostrar (4-120); menor = mais zoom",
              "cam");
     shell.add(cam_save, "save",
-             "Salva threshold/size/depth/crop atuais em " CAMERA_CONFIG_FILE
+             "Salva threshold/size/depth/crop/delta atuais em " CAMERA_CONFIG_FILE
              " no cartao SD",
              "cam");
     shell.add(cam_load, "load",
-             "Recarrega threshold/size/depth/crop de " CAMERA_CONFIG_FILE
+             "Recarrega threshold/size/depth/crop/delta de " CAMERA_CONFIG_FILE
              " no cartao SD",
              "cam");
 }

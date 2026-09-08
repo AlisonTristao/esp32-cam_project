@@ -5,13 +5,14 @@
 #include <cstdint>
 
 #include "Camera.h"
+#include "CameraMatrix.h"
 
 // Only a reference is needed, so the SD driver stays out of this header --
 // same reasoning as KeyStore.h (lib/KeyStore/KeyStore.h).
 class SDCard;
 
-// SD card root file holding the four "cam" shell parameters
-// (threshold/matrix_size/crop_size/bits_per_pixel), so they survive a
+// SD card root file holding the five "cam" shell parameters
+// (threshold/matrix_size/crop_size/bits_per_pixel/delta), so they survive a
 // reboot instead of always coming back at their DEFAULT_* value (see
 // Camera.cpp). Same convention as KEY_STORE_FILE: relative to the SDCard
 // mount point.
@@ -28,18 +29,19 @@ namespace cam {
  *
  *   offset size field
  *   0      8    magic          "CAMCFG\0\0"
- *   8      1    format         0x01
+ *   8      1    format         0x02 (reads v1 with default delta=2)
  *   9      1    threshold
  *   10     1    matrix_size
  *   11     1    crop_size
  *   12     1    bits_per_pixel
- *   13     11   reserved       zeros
+ *   13     1    delta          quantized levels (0..255)
+ *   14     10   reserved       zeros
  *   24     4    crc32          CRC-32/ISO-HDLC over octets 0..23, LE
  */
 inline constexpr std::size_t kConfigFileSize = 28U;
 
 /**
- * @brief A snapshot of the four live "cam" atomics (Camera.h), or a file
+ * @brief A snapshot of the five live "cam" atomics (Camera.h), or a file
  * image not yet applied to them.
  */
 struct Config {
@@ -47,6 +49,7 @@ struct Config {
     std::uint8_t matrix_size = 0U;
     std::uint8_t crop_size = 0U;
     std::uint8_t bits_per_pixel = 0U;
+    std::uint8_t delta = kDefaultDelta;
 };
 
 /**
@@ -60,7 +63,7 @@ enum class ConfigError : std::uint8_t {
     Ok = 0,
     Size,    // wrong length: not exactly kConfigFileSize octets
     Magic,   // not "CAMCFG\0\0"
-    Format,  // format octet is not 0x01
+    Format,  // format octet is neither 0x01 nor 0x02
     Crc32,   // stored CRC does not cover the first 24 octets
     Depth,   // bits_per_pixel not one of is_valid_bit_depth's values
     Range,   // matrix_size or crop_size outside [kMinMatrixSize, kMaxMatrixSize]
@@ -92,13 +95,13 @@ ConfigError parse_config(const std::uint8_t* data, std::size_t size,
  */
 void serialize_config(const Config& in, std::uint8_t* out) noexcept;
 
-/** @brief Snapshot of the four live atomics. */
+/** @brief Snapshot of the five live atomics. */
 Config snapshot_config() noexcept;
 
 /** @brief Same range/depth/budget rules parse_config enforces on a file. */
 bool is_valid_config(const Config& config) noexcept;
 
-/** @brief Applies an already-validated config to the four live atomics. */
+/** @brief Applies an already-validated config to the five live atomics. */
 void apply_config(const Config& config) noexcept;
 
 /**

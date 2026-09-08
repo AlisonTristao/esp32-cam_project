@@ -54,13 +54,19 @@ extern std::atomic<std::uint8_t> g_crop_size;
 // rejects -- see that function.
 extern std::atomic<std::uint8_t> g_bits_per_pixel;
 
+// Quantized intensity tolerance (0..255), effectively zero at depth=1.
+extern std::atomic<std::uint8_t> g_delta;
+// Last encoded frame's body sizes (including the 4-byte matrix header).
+extern std::atomic<std::uint16_t> g_matrix_raw_bytes, g_matrix_encoded_bytes;
+extern std::atomic<std::uint8_t> g_matrix_encoding;
+
 // Whether `bits_per_pixel` is one of the depths build_matrix supports
 // (1, 2, 4 or 8 -- each evenly divides a byte, so no sample ever straddles
 // a byte boundary).
 bool is_valid_bit_depth(std::uint8_t bits_per_pixel) noexcept;
 
 // Whether a (grid_size, bits_per_pixel) combination's wire body --
-// TelemetryPublisher's 3-byte {rows, cols, bits_per_pixel} header plus the
+// TelemetryPublisher's 4-byte {rows, cols, bits_per_pixel, encoding} header plus the
 // packed grid -- fits TelemetryPublisher::kMaxCameraMatrixBodySize. Shared
 // by cam_set_size and cam_set_depth (CamShell.cpp) so neither setter alone
 // can put the other's already-stored value over budget.

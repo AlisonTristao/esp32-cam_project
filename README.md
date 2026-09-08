@@ -1,5 +1,9 @@
 # ESP32-CAM: imagem binaria no serial
 
+A configuracao atual de camera.matrix, compressao RAW/RLE e comandos de delta
+esta em [Compressao da camera](docs/camera-compression.md). As instrucoes de
+saida ASCII abaixo descrevem a versao inicial do projeto.
+
 Projeto PlatformIO com ESP-IDF para ESP32-CAM AI Thinker e OV2640.
 A camera entrega grayscale em QQVGA (160 x 120), usando um framebuffer
 na PSRAM. O programa amostra diretamente esse buffer e imprime `0` para

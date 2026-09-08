@@ -1,6 +1,8 @@
 #ifndef TELEMETRY_PUBLISHER_H
 #define TELEMETRY_PUBLISHER_H
 
+#include "CameraMatrix.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -34,21 +36,22 @@ public:
     static constexpr std::uint32_t kLocalSubscriberSourceId = 0U;
     static constexpr std::uint32_t kLocalSubscriberBootId = 0U;
     static constexpr std::uint16_t kSchemaVersion = 1U;
+    static constexpr std::uint16_t kCameraMatrixSchemaVersion = 2U;
     static constexpr std::size_t kQueueCapacity = 8U;
     // schema_version(2) + state:u8(1) + frame_count:u32(4) + fps_x10:u16(2),
     // same non-nullable fixed-width layout btp::SampleWriter uses for
     // bally_OS's robot.state/protocol.test (see its TelemetryPublisher.cpp).
     static constexpr std::size_t kCameraStatusPayloadSize = 9U;
     // The camera.matrix document is Camera.cpp's downsampled grid, packed
-    // 1/2/4/8 bits per pixel (MSB-first, each row padded to a byte) behind a
-    // 3-byte {rows, cols, bits_per_pixel} header -- see build_matrix's own
+    // RAW (MSB-first, byte-aligned rows) or RLE at 1/2/4/8 bits behind a
+    // 4-byte {rows, cols, bits_per_pixel, encoding} header -- see build_matrix's own
     // comment for the exact layout. Runtime-sized (cam::g_matrix_size,
     // cam::g_bits_per_pixel; shell "cam set_size"/"cam set_depth"), so this
     // is a ceiling, not a fixed document size.
     // TELEMETRY reserves the first two payload octets for schema_version,
     // leaving this much for the body itself. BtpTransport.h's
     // kMaxLogicalPayloadSize must stay >= the payload size below.
-    static constexpr std::size_t kMaxCameraMatrixBodySize = 1900U;
+    static constexpr std::size_t kMaxCameraMatrixBodySize = cam::kMatrixBodyCapacity;
     static constexpr std::size_t kMaxCameraMatrixPayloadSize =
         kMaxCameraMatrixBodySize + 2U;
 

@@ -25,7 +25,7 @@ constexpr TelemetryPublisher::TopicSchema kSchemas[] = {
      100U,   // min: 0.1 Hz
      1000U},  // default/nominal: 1 Hz
     {TelemetryPublisher::kCameraMatrixTopicId,
-     TelemetryPublisher::kSchemaVersion,
+     TelemetryPublisher::kCameraMatrixSchemaVersion,
      "camera.matrix",
      TelemetryPublisher::Encoding::OpaqueBytes,
      nullptr,
@@ -269,7 +269,7 @@ bool TelemetryPublisher::pack_camera_matrix(
         length > kMaxCameraMatrixBodySize) {
         return false;
     }
-    write_u16_le(output, kSchemaVersion);
+    write_u16_le(output, kCameraMatrixSchemaVersion);
     if (length != 0U) {
         std::memcpy(output + 2U, body, length);
     }

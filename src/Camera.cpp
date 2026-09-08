@@ -1,4 +1,5 @@
 #include "Camera.h"
+#include "CameraMatrix.h"
 
 // Default grid side (pixels); runtime-adjustable up to kMaxMatrixSize via
 // the "cam set_size" shell command (CamShell.cpp) -- unchanged from the grid
@@ -8,7 +9,6 @@
 #define DEFAULT_BITS_PER_PIXEL 1
 
 #include <cstdio>
-#include <cstring>
 
 #include "esp_camera.h"
 #include "esp_err.h"
@@ -30,33 +30,12 @@ std::atomic<std::uint8_t> g_threshold{DEFAULT_BW_THRESHOLD};
 std::atomic<std::uint8_t> g_matrix_size{DEFAULT_MATRIX_SIZE};
 std::atomic<std::uint8_t> g_crop_size{kMaxMatrixSize};
 std::atomic<std::uint8_t> g_bits_per_pixel{DEFAULT_BITS_PER_PIXEL};
+std::atomic<std::uint8_t> g_delta{kDefaultDelta};
+std::atomic<std::uint16_t> g_matrix_raw_bytes{0}, g_matrix_encoded_bytes{0};
+std::atomic<std::uint8_t> g_matrix_encoding{0};
 std::atomic<std::uint32_t> g_frame_count{0U};
 std::atomic<std::uint16_t> g_fps_x10{0U};
 std::atomic<std::uint8_t> g_state{0U};
-
-bool is_valid_bit_depth(std::uint8_t bits_per_pixel) noexcept {
-    return bits_per_pixel == 1U || bits_per_pixel == 2U ||
-           bits_per_pixel == 4U || bits_per_pixel == 8U;
-}
-
-// Header octets in front of the packed grid (see build_matrix): grid rows,
-// grid cols, then bits_per_pixel. Kept separate from assuming square/fixed
-// depth so a decoder never has to guess either.
-constexpr std::size_t kMatrixHeaderSize = 3U;
-
-bool fits_matrix_budget(std::uint8_t grid_size,
-                         std::uint8_t bits_per_pixel) noexcept {
-    if (grid_size < kMinMatrixSize || grid_size > kMaxMatrixSize ||
-        !is_valid_bit_depth(bits_per_pixel)) {
-        return false;
-    }
-    const std::size_t row_bits =
-        static_cast<std::size_t>(grid_size) * bits_per_pixel;
-    const std::size_t row_bytes = (row_bits + 7U) / 8U;
-    const std::size_t total_size =
-        kMatrixHeaderSize + row_bytes * static_cast<std::size_t>(grid_size);
-    return total_size <= TelemetryPublisher::kMaxCameraMatrixBodySize;
-}
 
 namespace {
 
@@ -107,22 +86,7 @@ esp_err_t camera_init() {
     return esp_camera_init(&config);
 }
 
-// Samples a g_crop_size x g_crop_size square centered in fb (the "zoom" --
-// smaller than the frame's own native square means digital zoom) down (or up,
-// if grid_size > crop) to grid_size x grid_size, nearest-neighbor, and packs
-// each cell to bits_per_pixel bits into `out` -- the wire body
-// btp::TelemetryEncoding::OpaqueBytes carries as camera.matrix. Layout:
-// out[0]=rows, out[1]=cols (both grid_size; kept separate so a decoder never
-// has to assume square), out[2]=bits_per_pixel, then rows*row_bytes bytes of
-// packed samples where row_bytes=ceil(cols*bits_per_pixel/8), one row after
-// another, each row starting its own byte (so a row never spans a byte
-// boundary). Within a row, samples pack MSB-first: the first (leftmost)
-// column occupies the top bits_per_pixel bits of row_bytes[0], the next
-// sample the next bits_per_pixel bits, and so on -- e.g. at
-// bits_per_pixel=4, byte 0 holds {col 0 in bits 7-4, col 1 in bits 3-0}.
-// bits_per_pixel==1 keeps today's threshold behavior (g_threshold decides
-// each bit); bits_per_pixel in {2,4,8} instead keeps the top bits_per_pixel
-// bits of the sensor's 8-bit sample verbatim (no threshold), i.e. grayscale.
+// Sample/quantize the centered crop, then filter and adaptively encode schema v2.
 bool build_matrix(camera_fb_t* fb, std::uint8_t grid_size,
                    std::uint8_t bits_per_pixel, std::uint8_t* out,
                    std::size_t out_capacity, std::size_t* out_len) {
@@ -151,34 +115,13 @@ bool build_matrix(camera_fb_t* fb, std::uint8_t grid_size,
     const size_t x_offset = (fb->width - crop) / 2;
     const size_t y_offset = (fb->height - crop) / 2;
 
-    const size_t row_bits =
-        static_cast<size_t>(grid_size) * bits_per_pixel;
-    const size_t row_bytes = (row_bits + 7U) / 8U;
-    const size_t body_size = row_bytes * grid_size;
-    const size_t total_size = kMatrixHeaderSize + body_size;
-    if (out_capacity < total_size) {
-        ESP_LOGE(kTag, "Buffer da matriz pequeno demais (%u < %u)",
-                 static_cast<unsigned int>(out_capacity),
-                 static_cast<unsigned int>(total_size));
-        return false;
-    }
-
-    const std::uint8_t threshold = g_threshold.load(std::memory_order_relaxed);
-    // Every sample's bits fit within one byte (bits_per_pixel evenly divides
-    // 8), so no sample-to-byte alignment math is needed beyond a shift.
-    const unsigned samples_per_byte = 8U / bits_per_pixel;
-    const std::uint8_t sample_mask =
-        static_cast<std::uint8_t>((1U << bits_per_pixel) - 1U);
-
-    out[0] = grid_size;
-    out[1] = grid_size;
-    out[2] = bits_per_pixel;
-    std::uint8_t* body = out + kMatrixHeaderSize;
-    std::memset(body, 0, body_size);
-
+    // Dedicated capture-task scratch in BSS; avoid ~29 KB on its small stack.
+    static std::uint8_t samples[kMaxMatrixSize * kMaxMatrixSize];
+    static std::uint8_t filtered[kMaxMatrixSize * kMaxMatrixSize];
+    const auto threshold = g_threshold.load(std::memory_order_relaxed);
+    const auto delta = g_delta.load(std::memory_order_relaxed);
     for (size_t row = 0; row < grid_size; row++) {
         const size_t y = y_offset + (row * crop) / grid_size;
-        std::uint8_t* row_bits = body + row * row_bytes;
         for (size_t col = 0; col < grid_size; col++) {
             const size_t x = x_offset + (col * crop) / grid_size;
             const std::uint8_t pixel = fb->buf[y * fb->width + x];
@@ -187,15 +130,17 @@ bool build_matrix(camera_fb_t* fb, std::uint8_t grid_size,
                     ? (pixel >= threshold ? 1U : 0U)
                     : static_cast<std::uint8_t>(pixel >>
                                                  (8U - bits_per_pixel));
-            const unsigned shift =
-                (samples_per_byte - 1U - (col % samples_per_byte)) *
-                bits_per_pixel;
-            row_bits[col / samples_per_byte] |= static_cast<std::uint8_t>(
-                (sample & sample_mask) << shift);
+            samples[row * grid_size + col] = sample;
         }
     }
 
-    *out_len = total_size;
+    if (!encode_matrix(samples, grid_size, grid_size, bits_per_pixel, delta,
+                       filtered, sizeof(filtered), out, out_capacity, out_len)) return false;
+    g_matrix_raw_bytes.store(kMatrixHeaderSize +
+        ((std::size_t(grid_size) * bits_per_pixel + 7U) / 8U) * grid_size,
+        std::memory_order_relaxed);
+    g_matrix_encoded_bytes.store(static_cast<std::uint16_t>(*out_len), std::memory_order_relaxed);
+    g_matrix_encoding.store(out[3], std::memory_order_relaxed);
     return true;
 }
 

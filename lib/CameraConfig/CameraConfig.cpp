@@ -23,10 +23,12 @@ constexpr std::size_t kOffThreshold = 9U;
 constexpr std::size_t kOffMatrixSize = 10U;
 constexpr std::size_t kOffCropSize = 11U;
 constexpr std::size_t kOffBitsPerPixel = 12U;
+constexpr std::size_t kOffDelta = 13U;
 constexpr std::size_t kOffCrc = 24U;
 
 constexpr std::uint8_t kMagic[8] = {'C', 'A', 'M', 'C', 'F', 'G', 0x00, 0x00};
 constexpr std::uint8_t kFormatV1 = 0x01U;
+constexpr std::uint8_t kFormatV2 = 0x02U;
 
 std::uint32_t read_u32_le(const std::uint8_t* data) noexcept {
     return static_cast<std::uint32_t>(data[0]) |
@@ -75,7 +77,7 @@ ConfigError parse_config(const std::uint8_t* data, std::size_t size,
     for (std::size_t i = 0U; i < sizeof(kMagic); ++i) {
         if (data[kOffMagic + i] != kMagic[i]) return ConfigError::Magic;
     }
-    if (data[kOffFormat] != kFormatV1) return ConfigError::Format;
+    if (data[kOffFormat] != kFormatV1 && data[kOffFormat] != kFormatV2) return ConfigError::Format;
 
     // CRC before the fields: a corrupted file must be reported as corrupted,
     // not as an out-of-range value.
@@ -88,6 +90,7 @@ ConfigError parse_config(const std::uint8_t* data, std::size_t size,
     parsed.matrix_size = data[kOffMatrixSize];
     parsed.crop_size = data[kOffCropSize];
     parsed.bits_per_pixel = data[kOffBitsPerPixel];
+    parsed.delta = data[kOffFormat] == kFormatV1 ? kDefaultDelta : data[kOffDelta];
 
     if (!is_valid_bit_depth(parsed.bits_per_pixel)) return ConfigError::Depth;
     if (parsed.matrix_size < kMinMatrixSize || parsed.matrix_size > kMaxMatrixSize ||
@@ -105,11 +108,12 @@ ConfigError parse_config(const std::uint8_t* data, std::size_t size,
 void serialize_config(const Config& in, std::uint8_t* out) noexcept {
     std::memset(out, 0, kConfigFileSize);
     std::memcpy(out + kOffMagic, kMagic, sizeof(kMagic));
-    out[kOffFormat] = kFormatV1;
+    out[kOffFormat] = kFormatV2;
     out[kOffThreshold] = in.threshold;
     out[kOffMatrixSize] = in.matrix_size;
     out[kOffCropSize] = in.crop_size;
     out[kOffBitsPerPixel] = in.bits_per_pixel;
+    out[kOffDelta] = in.delta;
     write_u32_le(out + kOffCrc, btp::crc32(out, kOffCrc));
 }
 
@@ -119,6 +123,7 @@ Config snapshot_config() noexcept {
     config.matrix_size = g_matrix_size.load(std::memory_order_relaxed);
     config.crop_size = g_crop_size.load(std::memory_order_relaxed);
     config.bits_per_pixel = g_bits_per_pixel.load(std::memory_order_relaxed);
+    config.delta = g_delta.load(std::memory_order_relaxed);
     return config;
 }
 
@@ -127,6 +132,7 @@ void apply_config(const Config& config) noexcept {
     g_matrix_size.store(config.matrix_size, std::memory_order_relaxed);
     g_crop_size.store(config.crop_size, std::memory_order_relaxed);
     g_bits_per_pixel.store(config.bits_per_pixel, std::memory_order_relaxed);
+    g_delta.store(config.delta, std::memory_order_relaxed);
 }
 
 #if defined(ESP_PLATFORM)

@@ -97,14 +97,14 @@ void CamRobot::bindProtocolTransport() noexcept {
         .u32("frame_count")
         .u16("fps", 0.1, "fps")
         .end();
-    // OpaqueBytes body (a bit-packed grayscale grid, see Camera.cpp's
-    // build_binary_matrix), no wire fields -- same catalog shape bally_OS
+    // OpaqueBytes body (adaptive RAW/RLE grid, see CameraMatrix.h),
+    // no wire fields -- same catalog shape bally_OS
     // uses for its own replace-in-place text topic (system.monitor), just a
     // different encoding tag. Rates mirror TelemetryPublisher's own
     // camera.matrix TopicSchema entry (100 Hz is a permissive ceiling and
     // default; the sustainable rate still depends on frame delivery).
     node_->topic(TelemetryPublisher::kCameraMatrixTopicId,
-                TelemetryPublisher::kSchemaVersion, "camera.matrix",
+                TelemetryPublisher::kCameraMatrixSchemaVersion, "camera.matrix",
                 /*fill=*/nullptr, /*fill_ctx=*/nullptr,
                 btp::TelemetryEncoding::OpaqueBytes, /*subscribable=*/true,
                 /*max_rate_millihz=*/100000U)
