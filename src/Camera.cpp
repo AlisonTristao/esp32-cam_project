@@ -4,9 +4,9 @@
 // Default grid side (pixels); runtime-adjustable up to kMaxMatrixSize via
 // the "cam set_size" shell command (CamShell.cpp) -- unchanged from the grid
 // this file always sent before it became configurable.
-#define DEFAULT_MATRIX_SIZE 30
+#define DEFAULT_MATRIX_SIZE 60
 #define DEFAULT_BW_THRESHOLD 180
-#define DEFAULT_BITS_PER_PIXEL 1
+#define DEFAULT_BITS_PER_PIXEL 4
 
 #include <cstdio>
 
@@ -23,6 +23,8 @@
 static_assert(DEFAULT_MATRIX_SIZE >= cam::kMinMatrixSize &&
                   DEFAULT_MATRIX_SIZE <= cam::kMaxMatrixSize,
               "DEFAULT_MATRIX_SIZE fora dos limites de cam::g_matrix_size");
+// 60x60 a 4 bits/pixel: header (4) + 60 * ceil(60*4/8) = 4 + 1800 = 1804
+// bytes, dentro de kMatrixBodyCapacity (1900) -- ver fits_matrix_budget.
 
 namespace cam {
 
@@ -30,7 +32,7 @@ std::atomic<std::uint8_t> g_threshold{DEFAULT_BW_THRESHOLD};
 std::atomic<std::uint8_t> g_matrix_size{DEFAULT_MATRIX_SIZE};
 std::atomic<std::uint8_t> g_crop_size{kMaxMatrixSize};
 std::atomic<std::uint8_t> g_bits_per_pixel{DEFAULT_BITS_PER_PIXEL};
-std::atomic<std::uint8_t> g_delta{kDefaultDelta};
+std::atomic<std::uint8_t> g_adaptive_threshold{0U};
 std::atomic<std::uint16_t> g_matrix_raw_bytes{0}, g_matrix_encoded_bytes{0};
 std::atomic<std::uint8_t> g_matrix_encoding{0};
 std::atomic<std::uint32_t> g_frame_count{0U};
@@ -86,7 +88,7 @@ esp_err_t camera_init() {
     return esp_camera_init(&config);
 }
 
-// Sample/quantize the centered crop, then filter and adaptively encode schema v2.
+// Sample/quantize the centered crop, then adaptively encode schema v2.
 bool build_matrix(camera_fb_t* fb, std::uint8_t grid_size,
                    std::uint8_t bits_per_pixel, std::uint8_t* out,
                    std::size_t out_capacity, std::size_t* out_len) {
@@ -116,26 +118,69 @@ bool build_matrix(camera_fb_t* fb, std::uint8_t grid_size,
     const size_t y_offset = (fb->height - crop) / 2;
 
     // Dedicated capture-task scratch in BSS; avoid ~29 KB on its small stack.
+    // `raw` holds the sampled grayscale grid (pre-quantization) just long
+    // enough to find its min/max for the adaptive threshold below; `samples`
+    // holds the quantized grid encode_matrix packs.
+    static std::uint8_t raw[kMaxMatrixSize * kMaxMatrixSize];
     static std::uint8_t samples[kMaxMatrixSize * kMaxMatrixSize];
-    static std::uint8_t filtered[kMaxMatrixSize * kMaxMatrixSize];
-    const auto threshold = g_threshold.load(std::memory_order_relaxed);
-    const auto delta = g_delta.load(std::memory_order_relaxed);
+    std::uint8_t min_pixel = 255U, max_pixel = 0U;
     for (size_t row = 0; row < grid_size; row++) {
         const size_t y = y_offset + (row * crop) / grid_size;
         for (size_t col = 0; col < grid_size; col++) {
             const size_t x = x_offset + (col * crop) / grid_size;
             const std::uint8_t pixel = fb->buf[y * fb->width + x];
-            const std::uint8_t sample =
-                (bits_per_pixel == 1U)
-                    ? (pixel >= threshold ? 1U : 0U)
-                    : static_cast<std::uint8_t>(pixel >>
-                                                 (8U - bits_per_pixel));
+            raw[row * grid_size + col] = pixel;
+            if (pixel < min_pixel) min_pixel = pixel;
+            if (pixel > max_pixel) max_pixel = pixel;
+        }
+    }
+
+    // Adaptive threshold: midpoint of this frame's own sampled range, so a
+    // 1-bit grid keeps splitting light from dark as exposure/lighting drift
+    // instead of sticking to a threshold tuned for a different frame.
+    const auto adaptive = g_adaptive_threshold.load(std::memory_order_relaxed);
+    const std::uint8_t threshold =
+        (bits_per_pixel == 1U && adaptive != 0U)
+            ? static_cast<std::uint8_t>((unsigned(min_pixel) + max_pixel) / 2U)
+            : g_threshold.load(std::memory_order_relaxed);
+
+    // Adaptive contrast stretch (depth>1): linearly remaps this frame's own
+    // [min_pixel, max_pixel] onto the full [0, max_level] the depth affords,
+    // instead of just truncating the sensor's top bits -- a low-contrast
+    // frame (e.g. dim lighting bunching every pixel into a narrow band)
+    // still uses every available gray level rather than mostly one or two.
+    // A perfectly flat frame (range=0, every pixel identical) falls back to
+    // plain truncation below instead of dividing by zero; every sample
+    // still comes out equal, which is the only sensible result there.
+    const unsigned max_level = (1U << bits_per_pixel) - 1U;
+    const unsigned range = unsigned(max_pixel) - min_pixel;
+    const bool stretch = bits_per_pixel != 1U && adaptive != 0U && range != 0U;
+
+    // bit==1 (depth=1) marks a pixel darker than the threshold (below it),
+    // not brighter: TraceView's decoder draws a set bit as black (its own
+    // long-standing "set bit = black" display convention), so marking dark
+    // cells is what makes the rendered image match the actual scene instead
+    // of coming out as a photographic negative of it.
+    for (size_t row = 0; row < grid_size; row++) {
+        for (size_t col = 0; col < grid_size; col++) {
+            const std::uint8_t pixel = raw[row * grid_size + col];
+            std::uint8_t sample;
+            if (bits_per_pixel == 1U) {
+                sample = pixel < threshold ? 1U : 0U;
+            } else if (stretch) {
+                sample = static_cast<std::uint8_t>(
+                    ((unsigned(pixel) - min_pixel) * max_level + range / 2U) /
+                    range);
+            } else {
+                sample = static_cast<std::uint8_t>(pixel >>
+                                                    (8U - bits_per_pixel));
+            }
             samples[row * grid_size + col] = sample;
         }
     }
 
-    if (!encode_matrix(samples, grid_size, grid_size, bits_per_pixel, delta,
-                       filtered, sizeof(filtered), out, out_capacity, out_len)) return false;
+    if (!encode_matrix(samples, grid_size, grid_size, bits_per_pixel,
+                       out, out_capacity, out_len)) return false;
     g_matrix_raw_bytes.store(kMatrixHeaderSize +
         ((std::size_t(grid_size) * bits_per_pixel + 7U) / 8U) * grid_size,
         std::memory_order_relaxed);

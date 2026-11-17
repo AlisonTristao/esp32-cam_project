@@ -44,14 +44,14 @@ void cam_print(const char* fmt, ...) {
 }
 
 std::uint8_t cam_status() {
-    cam_print("cam: state=%u frame_count=%lu fps=%.1f threshold=%u\n",
+    cam_print("cam: state=%u frame_count=%lu fps=%.1f threshold=%u adaptive=%u\n",
              static_cast<unsigned>(cam::g_state.load()),
              static_cast<unsigned long>(cam::g_frame_count.load()),
-             cam::g_fps_x10.load() / 10.0, static_cast<unsigned>(cam::g_threshold.load()));
-    cam_print("cam: size=%u depth=%u delta=%u raw_bytes=%u encoded_bytes=%u format=%s\n",
+             cam::g_fps_x10.load() / 10.0, static_cast<unsigned>(cam::g_threshold.load()),
+             static_cast<unsigned>(cam::g_adaptive_threshold.load()));
+    cam_print("cam: size=%u depth=%u raw_bytes=%u encoded_bytes=%u format=%s\n",
               static_cast<unsigned>(cam::g_matrix_size.load()),
               static_cast<unsigned>(cam::g_bits_per_pixel.load()),
-              static_cast<unsigned>(cam::g_delta.load()),
               static_cast<unsigned>(cam::g_matrix_raw_bytes.load()),
               static_cast<unsigned>(cam::g_matrix_encoded_bytes.load()),
               cam::g_matrix_encoding.load() == 1U ? "RLE" : "RAW");
@@ -66,6 +66,20 @@ std::uint8_t cam_threshold() {
 std::uint8_t cam_set_threshold(std::uint8_t value) {
     cam::g_threshold.store(value);
     cam_print("cam: threshold set to %u\n", static_cast<unsigned>(value));
+    return RESULT_OK;
+}
+
+std::uint8_t cam_adaptive() {
+    cam_print("cam: adaptive=%u (1=on: threshold/contraste segue o min/max de "
+              "cada frame -- depth=1 threshold, depth>1 contraste)\n",
+              static_cast<unsigned>(cam::g_adaptive_threshold.load()));
+    return RESULT_OK;
+}
+
+std::uint8_t cam_set_adaptive(std::uint8_t value) {
+    cam::g_adaptive_threshold.store(value != 0U ? 1U : 0U);
+    cam_print("cam: adaptive set to %u\n",
+             static_cast<unsigned>(cam::g_adaptive_threshold.load()));
     return RESULT_OK;
 }
 
@@ -124,21 +138,6 @@ std::uint8_t cam_set_depth(std::uint8_t value) {
     return RESULT_OK;
 }
 
-std::uint8_t cam_delta() {
-    const auto depth = cam::g_bits_per_pixel.load();
-    const unsigned delta = cam::g_delta.load();
-    const unsigned maximum = (1U << depth) - 1U;
-    const unsigned effective = depth == 1U ? 0U : (delta < maximum ? delta : maximum);
-    cam_print("cam: delta=%u effective=%u depth=%u (RLE adaptativo sempre ativo)\n",
-              delta, effective, static_cast<unsigned>(depth));
-    return RESULT_OK;
-}
-
-std::uint8_t cam_set_delta(std::uint8_t value) {
-    cam::g_delta.store(value);
-    return cam_delta();
-}
-
 std::uint8_t cam_crop() {
     const std::uint8_t crop = cam::g_crop_size.load();
     cam_print("cam: crop=%ux%u (min=%u max=%u)\n", static_cast<unsigned>(crop),
@@ -185,12 +184,12 @@ std::uint8_t cam_load() {
     }
     cam_print(
         "cam: configuracao carregada de " CAMERA_CONFIG_FILE
-        " (threshold=%u size=%u crop=%u depth=%u delta=%u)\n",
+        " (threshold=%u size=%u crop=%u depth=%u adaptive=%u)\n",
         static_cast<unsigned>(cam::g_threshold.load()),
         static_cast<unsigned>(cam::g_matrix_size.load()),
         static_cast<unsigned>(cam::g_crop_size.load()),
         static_cast<unsigned>(cam::g_bits_per_pixel.load()),
-        static_cast<unsigned>(cam::g_delta.load()));
+        static_cast<unsigned>(cam::g_adaptive_threshold.load()));
     return RESULT_OK;
 }
 
@@ -226,9 +225,15 @@ void register_cam_shell_commands(TinyShell& shell,
              "Ajusta a profundidade da matriz (1=P&B, 2/4/8=escala de "
              "cinza); reduz o tamanho maximo permitido",
              "cam");
-    shell.add(cam_delta, "delta", "Mostra delta configurado e efetivo", "cam");
-    shell.add(cam_set_delta, "set_delta",
-              "Tolerancia 0-255 nos niveis quantizados; depth=1 usa zero", "cam");
+    shell.add(cam_adaptive, "adaptive",
+             "Mostra se o threshold/contraste adaptativo (min/max do frame) "
+             "esta ativo",
+             "cam");
+    shell.add(cam_set_adaptive, "set_adaptive",
+             "Liga (1) ou desliga (0) o modo adaptativo: em depth=1 ignora "
+             "'cam set_threshold' e usa o ponto medio do frame; em depth>1 "
+             "estica o contraste ao min/max do frame",
+             "cam");
     shell.add(cam_crop, "crop",
              "Mostra o recorte central (NxN, em pixels) usado antes de "
              "reamostrar",
@@ -240,11 +245,11 @@ void register_cam_shell_commands(TinyShell& shell,
              "reamostrar (4-120); menor = mais zoom",
              "cam");
     shell.add(cam_save, "save",
-             "Salva threshold/size/depth/crop/delta atuais em " CAMERA_CONFIG_FILE
+             "Salva threshold/size/depth/crop/adaptive atuais em " CAMERA_CONFIG_FILE
              " no cartao SD",
              "cam");
     shell.add(cam_load, "load",
-             "Recarrega threshold/size/depth/crop/delta de " CAMERA_CONFIG_FILE
+             "Recarrega threshold/size/depth/crop/adaptive de " CAMERA_CONFIG_FILE
              " no cartao SD",
              "cam");
 }

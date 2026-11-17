@@ -12,10 +12,10 @@
 class SDCard;
 
 // SD card root file holding the five "cam" shell parameters
-// (threshold/matrix_size/crop_size/bits_per_pixel/delta), so they survive a
-// reboot instead of always coming back at their DEFAULT_* value (see
-// Camera.cpp). Same convention as KEY_STORE_FILE: relative to the SDCard
-// mount point.
+// (threshold/matrix_size/crop_size/bits_per_pixel/adaptive_threshold), so
+// they survive a reboot instead of always coming back at their DEFAULT_*
+// value (see Camera.cpp). Same convention as KEY_STORE_FILE: relative to the
+// SDCard mount point.
 #define CAMERA_CONFIG_FILE "camera.cfg"
 
 namespace cam {
@@ -28,15 +28,16 @@ namespace cam {
  * this firmware puts on the card. Every integer is little-endian.
  *
  *   offset size field
- *   0      8    magic          "CAMCFG\0\0"
- *   8      1    format         0x02 (reads v1 with default delta=2)
+ *   0      8    magic               "CAMCFG\0\0"
+ *   8      1    format              0x03 (v1/v2 read too, see below)
  *   9      1    threshold
  *   10     1    matrix_size
  *   11     1    crop_size
  *   12     1    bits_per_pixel
- *   13     1    delta          quantized levels (0..255)
- *   14     10   reserved       zeros
- *   24     4    crc32          CRC-32/ISO-HDLC over octets 0..23, LE
+ *   13     1    adaptive_threshold  0=off, 1=on (v3 only; v1/v2 files predate
+ *                                   this field and always read as off)
+ *   14     10   reserved            zeros
+ *   24     4    crc32               CRC-32/ISO-HDLC over octets 0..23, LE
  */
 inline constexpr std::size_t kConfigFileSize = 28U;
 
@@ -49,7 +50,7 @@ struct Config {
     std::uint8_t matrix_size = 0U;
     std::uint8_t crop_size = 0U;
     std::uint8_t bits_per_pixel = 0U;
-    std::uint8_t delta = kDefaultDelta;
+    std::uint8_t adaptive_threshold = 0U;
 };
 
 /**

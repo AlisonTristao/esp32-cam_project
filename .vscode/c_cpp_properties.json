@@ -499,7 +499,7 @@
                 "SOC_MMU_PAGE_SIZE=CONFIG_MMU_PAGE_SIZE",
                 "IDF_VER=\"6.0.1\"",
                 "ESP_PLATFORM",
-                "PLATFORMIO=60119",
+                "PLATFORMIO=60200",
                 "ARDUINO_ESP32_DEV",
                 "BOARD_HAS_PSRAM",
                 "MAC_ADDR=0xDC,0xDA,0x0C,0x30,0xAA,0x5C",
